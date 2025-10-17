@@ -40,6 +40,7 @@ class _TouchPadPageState extends State<TouchPadPage> {
   Timer? heartbeat;
   final FocusNode _imeFocus = FocusNode();
   final TextEditingController _imeCtrl = TextEditingController();
+  final FocusNode _rawFocus = FocusNode();
 
   // Coalesce
   Offset pendingMove = Offset.zero;
@@ -51,6 +52,8 @@ class _TouchPadPageState extends State<TouchPadPage> {
   double _lastScale = 1.0;
   double _lastRotation = 0.0;
   bool _singleFingerActive = false;
+  // Move sensitivity
+  final double _moveGain = 1.6;
 
   @override
   void dispose() {
@@ -63,28 +66,50 @@ class _TouchPadPageState extends State<TouchPadPage> {
   }
 
   Future<void> connectDialog() async {
-    final ipCtrl = TextEditingController(text: server ?? '');
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1B1E24),
-          title: const Text('连接到 PC', style: TextStyle(color: Colors.white)),
-          content: TextField(
-            controller: ipCtrl,
-            style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(hintText: '示例: 192.168.1.10:8988', hintStyle: TextStyle(color: Colors.white54)),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('连接')),
-          ],
-        );
-      },
-    );
+    const defaultPrefix = '192.168.';
+    const defaultPort = ':8988';
+    String mid = '';
+    if (server != null && server!.startsWith(defaultPrefix) && server!.endsWith(defaultPort)) {
+      mid = server!.substring(defaultPrefix.length, server!.length - defaultPort.length);
+    }
+    final ipCtrl = TextEditingController(text: mid);
+    bool? ok;
+    final prevOrientations = [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight];
+    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+    try {
+      ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1B1E24),
+            title: const Text('连接到 PC', style: TextStyle(color: Colors.white)),
+            content: TextField(
+              controller: ipCtrl,
+              style: const TextStyle(color: Colors.white),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              textInputAction: TextInputAction.done,
+              decoration: const InputDecoration(
+                hintText: '请输入剩余地址，例如 1.10（默认前缀 192.168.，端口 :8988）',
+                hintStyle: TextStyle(color: Colors.white54),
+                prefixText: '192.168.',
+                suffixText: ':8988',
+              ),
+              onSubmitted: (_) => Navigator.pop(ctx, true),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('连接')),
+            ],
+          );
+        },
+      );
+    } finally {
+      await SystemChrome.setPreferredOrientations(prevOrientations);
+    }
     if (ok == true) {
-      server = ipCtrl.text.trim();
-      if (server != null && server!.isNotEmpty) {
+      final midInput = ipCtrl.text.trim();
+      if (midInput.isNotEmpty) {
+        server = '$defaultPrefix$midInput$defaultPort';
         await _connect('ws://$server/ws');
       }
     }
@@ -133,18 +158,25 @@ class _TouchPadPageState extends State<TouchPadPage> {
   }
 
   void _enqueueMove(Offset delta) {
-    pendingMove += delta;
-    flushTimer ??= Timer(const Duration(milliseconds: 12), () {
+    // 应用增益系数后再累计，方便统一节流发送
+    pendingMove += Offset(delta.dx * _moveGain, delta.dy * _moveGain);
+    flushTimer ??= Timer(const Duration(milliseconds: 40), () {
       final send = pendingMove;
       pendingMove = Offset.zero;
       flushTimer = null;
-      if (send.distanceSquared > 0.2) {
+      if (send.distanceSquared > 0.01) {
         _sendJson({
           'type': 'mouse_move',
           'ts': DateTime.now().millisecondsSinceEpoch,
           'dx': send.dx,
           'dy': send.dy,
           'fingers': 1,
+        });
+        _sendJson({
+          'type': 'touchmove',
+          'ts': DateTime.now().millisecondsSinceEpoch,
+          'dx': send.dx,
+          'dy': send.dy,
         });
       }
     });
@@ -201,10 +233,8 @@ class _TouchPadPageState extends State<TouchPadPage> {
                 onScaleUpdate: (details) {
                   if (!connected) return;
                   if (details.pointerCount == 1) {
-                    final d = details.focalPointDelta;
-                    // 保留原鼠标移动协议，同时发送 touchmove
-                    _enqueueMove(d);
-                    _sendJson({'type': 'touchmove', 'ts': DateTime.now().millisecondsSinceEpoch, 'dx': d.dx, 'dy': d.dy});
+                    // 改为节流：累计当前位移，100ms 定时发送合并位移
+                    _enqueueMove(details.focalPointDelta);
                   } else {
                     final fp = details.localFocalPoint;
                     // Pinch
@@ -276,6 +306,7 @@ class _TouchPadPageState extends State<TouchPadPage> {
               child: FilledButton(
                 onPressed: () {
                   FocusScope.of(context).requestFocus(_imeFocus);
+                  _rawFocus.requestFocus();
                 },
                 child: const Icon(Icons.keyboard_alt_rounded),
               ),
