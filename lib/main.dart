@@ -45,6 +45,13 @@ class _TouchPadPageState extends State<TouchPadPage> {
   Offset pendingMove = Offset.zero;
   Timer? flushTimer;
 
+  // Gesture state
+  Offset? _lastTapPos;
+  Offset? _lastDoubleTapPos;
+  double _lastScale = 1.0;
+  double _lastRotation = 0.0;
+  bool _singleFingerActive = false;
+
   @override
   void dispose() {
     heartbeat?.cancel();
@@ -153,10 +160,92 @@ class _TouchPadPageState extends State<TouchPadPage> {
           children: [
             // Touch area
             Positioned.fill(
-              child: Listener(
-                onPointerMove: (e) {
+              child: GestureDetector(
+                onTapDown: (details) {
+                  _lastTapPos = details.localPosition;
+                },
+                onTap: () {
                   if (!connected) return;
-                  _enqueueMove(e.delta);
+                  final p = _lastTapPos ?? const Offset(0, 0);
+                  _sendJson({'type': 'tap', 'ts': DateTime.now().millisecondsSinceEpoch, 'x': p.dx, 'y': p.dy});
+                },
+                onDoubleTapDown: (details) {
+                  _lastDoubleTapPos = details.localPosition;
+                },
+                onDoubleTap: () {
+                  if (!connected) return;
+                  final p = _lastDoubleTapPos ?? const Offset(0, 0);
+                  _sendJson({'type': 'doubletap', 'ts': DateTime.now().millisecondsSinceEpoch, 'x': p.dx, 'y': p.dy});
+                },
+                onLongPressStart: (details) {
+                  if (!connected) return;
+                  _sendJson({
+                    'type': 'longpress',
+                    'ts': DateTime.now().millisecondsSinceEpoch,
+                    'x': details.localPosition.dx,
+                    'y': details.localPosition.dy,
+                  });
+                },
+                onScaleStart: (details) {
+                  if (!connected) return;
+                  _singleFingerActive = details.pointerCount == 1;
+                  _lastScale = 1.0;
+                  _lastRotation = 0.0;
+                  final fp = details.localFocalPoint;
+                  if (_singleFingerActive) {
+                    _sendJson({'type': 'touchstart', 'ts': DateTime.now().millisecondsSinceEpoch, 'x': fp.dx, 'y': fp.dy});
+                  } else {
+                    _sendJson({'type': 'gesture_start', 'ts': DateTime.now().millisecondsSinceEpoch, 'cx': fp.dx, 'cy': fp.dy});
+                  }
+                },
+                onScaleUpdate: (details) {
+                  if (!connected) return;
+                  if (details.pointerCount == 1) {
+                    final d = details.focalPointDelta;
+                    // 保留原鼠标移动协议，同时发送 touchmove
+                    _enqueueMove(d);
+                    _sendJson({'type': 'touchmove', 'ts': DateTime.now().millisecondsSinceEpoch, 'dx': d.dx, 'dy': d.dy});
+                  } else {
+                    final fp = details.localFocalPoint;
+                    // Pinch
+                    final scale = details.scale;
+                    final ds = scale - _lastScale;
+                    _lastScale = scale;
+                    if (ds.abs() > 0.001) {
+                      _sendJson({
+                        'type': 'pinch',
+                        'ts': DateTime.now().millisecondsSinceEpoch,
+                        'scale': scale,
+                        'dscale': ds,
+                        'cx': fp.dx,
+                        'cy': fp.dy,
+                      });
+                    }
+                    // Rotate
+                    final rot = details.rotation; // radians
+                    final dr = rot - _lastRotation;
+                    _lastRotation = rot;
+                    if (dr.abs() > 0.0001) {
+                      _sendJson({
+                        'type': 'rotate',
+                        'ts': DateTime.now().millisecondsSinceEpoch,
+                        'radians': rot,
+                        'dr': dr,
+                        'cx': fp.dx,
+                        'cy': fp.dy,
+                      });
+                    }
+                  }
+                },
+                onScaleEnd: (details) {
+                  if (!connected) return;
+                  final v = details.velocity.pixelsPerSecond;
+                  if (_singleFingerActive) {
+                    _sendJson({'type': 'touchend', 'ts': DateTime.now().millisecondsSinceEpoch, 'vx': v.dx, 'vy': v.dy});
+                  } else {
+                    _sendJson({'type': 'gesture_end', 'ts': DateTime.now().millisecondsSinceEpoch, 'vx': v.dx, 'vy': v.dy});
+                  }
+                  _singleFingerActive = false;
                 },
                 child: Container(
                   margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
