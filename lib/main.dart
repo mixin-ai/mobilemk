@@ -34,7 +34,7 @@ class TouchPadPage extends StatefulWidget {
   State<TouchPadPage> createState() => _TouchPadPageState();
 }
 
-class _TouchPadPageState extends State<TouchPadPage> {
+class _TouchPadPageState extends State<TouchPadPage> with WidgetsBindingObserver {
   ConnState state = ConnState.disconnected;
   WebSocketChannel? ch;
   String? server;
@@ -59,6 +59,7 @@ class _TouchPadPageState extends State<TouchPadPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     heartbeat?.cancel();
     flushTimer?.cancel();
     ch?.sink.close();
@@ -95,7 +96,28 @@ class _TouchPadPageState extends State<TouchPadPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadRecentServers();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState appState) {
+    if (appState == AppLifecycleState.resumed) {
+      _attemptAutoReconnect();
+    }
+  }
+
+  void _attemptAutoReconnect() {
+    if (this.state == ConnState.connected) return;
+    String? target = server;
+    if (target == null || target.isEmpty) {
+      if (recentServers.isEmpty) return;
+      target = recentServers.first;
+    }
+    if (target == null || target.isEmpty) return;
+    server = target;
+    setState(() => this.state = ConnState.reconnecting);
+    _connect('ws://$target/ws');
   }
 
   Future<void> connectDialog() async {
@@ -133,7 +155,7 @@ class _TouchPadPageState extends State<TouchPadPage> {
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   textInputAction: TextInputAction.done,
                   decoration: const InputDecoration(
-                    hintText: '请输入剩余地址，例如 1.10（默认前缀 192.168.，端口 :8988）',
+                    hintText: '192.168.请输入ip',
                     hintStyle: TextStyle(color: Colors.white54),
                     prefixText: '192.168.',
                     suffixText: ':8988',
