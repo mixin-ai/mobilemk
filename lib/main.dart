@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 void main() {
@@ -54,6 +55,7 @@ class _TouchPadPageState extends State<TouchPadPage> {
   bool _singleFingerActive = false;
   // Move sensitivity
   final double _moveGain = 1.6;
+  List<String> recentServers = [];
 
   @override
   void dispose() {
@@ -65,17 +67,56 @@ class _TouchPadPageState extends State<TouchPadPage> {
     super.dispose();
   }
 
+  Future<void> _loadRecentServers() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList('recentServers') ?? [];
+    setState(() {
+      recentServers = list;
+    });
+  }
+
+  Future<void> _saveRecentServers() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('recentServers', recentServers);
+  }
+
+  void _pinRecentServer(String s) {
+    setState(() {
+      final idx = recentServers.indexOf(s);
+      if (idx != -1) recentServers.removeAt(idx);
+      recentServers.insert(0, s);
+      if (recentServers.length > 5) {
+        recentServers = recentServers.sublist(0, 5);
+      }
+    });
+    _saveRecentServers();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecentServers();
+  }
+
   Future<void> connectDialog() async {
-    const defaultPrefix = '192.168.';
-    const defaultPort = ':8988';
-    String mid = '';
-    if (server != null && server!.startsWith(defaultPrefix) && server!.endsWith(defaultPort)) {
-      mid = server!.substring(defaultPrefix.length, server!.length - defaultPort.length);
-    }
-    final ipCtrl = TextEditingController(text: mid);
-    bool? ok;
-    final prevOrientations = [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight];
-    await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+      const defaultPrefix = '192.168.';
+      const defaultPort = ':8988';
+      String mid = '';
+      if (server != null && server!.startsWith(defaultPrefix) && server!.endsWith(defaultPort)) {
+        mid = server!.substring(defaultPrefix.length, server!.length - defaultPort.length);
+      }
+      if (mid.isEmpty && recentServers.isNotEmpty) {
+        String first = recentServers.first;
+        if (first.startsWith(defaultPrefix) && first.endsWith(defaultPort)) {
+          mid = first.substring(defaultPrefix.length, first.length - defaultPort.length);
+        } else {
+          mid = first;
+        }
+      }
+      final ipCtrl = TextEditingController(text: mid);
+      bool? ok;
+      final prevOrientations = [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight];
+      await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     try {
       ok = await showDialog<bool>(
         context: context,
@@ -83,18 +124,48 @@ class _TouchPadPageState extends State<TouchPadPage> {
           return AlertDialog(
             backgroundColor: const Color(0xFF1B1E24),
             title: const Text('连接到 PC', style: TextStyle(color: Colors.white)),
-            content: TextField(
-              controller: ipCtrl,
-              style: const TextStyle(color: Colors.white),
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              textInputAction: TextInputAction.done,
-              decoration: const InputDecoration(
-                hintText: '请输入剩余地址，例如 1.10（默认前缀 192.168.，端口 :8988）',
-                hintStyle: TextStyle(color: Colors.white54),
-                prefixText: '192.168.',
-                suffixText: ':8988',
-              ),
-              onSubmitted: (_) => Navigator.pop(ctx, true),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: ipCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  textInputAction: TextInputAction.done,
+                  decoration: const InputDecoration(
+                    hintText: '请输入剩余地址，例如 1.10（默认前缀 192.168.，端口 :8988）',
+                    hintStyle: TextStyle(color: Colors.white54),
+                    prefixText: '192.168.',
+                    suffixText: ':8988',
+                  ),
+                  onSubmitted: (_) => Navigator.pop(ctx, true),
+                ),
+                const SizedBox(height: 12),
+                if (recentServers.isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('最近连接', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  ),
+                if (recentServers.isNotEmpty)
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: recentServers.take(5).map((s) {
+                      String midItem = s;
+                      const dp = '192.168.';
+                      const dport = ':8988';
+                      if (midItem.startsWith(dp) && midItem.endsWith(dport)) {
+                        midItem = midItem.substring(dp.length, midItem.length - dport.length);
+                      }
+                      return ActionChip(
+                        label: Text(midItem, style: const TextStyle(color: Colors.white)),
+                        onPressed: () {
+                          ipCtrl.text = midItem;
+                        },
+                      );
+                    }).toList(),
+                  ),
+              ],
             ),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
@@ -110,6 +181,7 @@ class _TouchPadPageState extends State<TouchPadPage> {
       final midInput = ipCtrl.text.trim();
       if (midInput.isNotEmpty) {
         server = '$defaultPrefix$midInput$defaultPort';
+        _pinRecentServer(server!);
         await _connect('ws://$server/ws');
       }
     }
@@ -304,9 +376,16 @@ class _TouchPadPageState extends State<TouchPadPage> {
               right: 24,
               top: 16,
               child: FilledButton(
-                onPressed: () {
+                onPressed: () async {
+                  // 先取消当前焦点，避免被其他节点占用
+                  FocusManager.instance.primaryFocus?.unfocus();
+                  await Future.delayed(const Duration(milliseconds: 10));
+                  // 只请求隐藏输入框的焦点
                   FocusScope.of(context).requestFocus(_imeFocus);
-                  _rawFocus.requestFocus();
+                  // 显式请求显示软键盘（部分设备在恢复后需要）
+                  try {
+                    await SystemChannels.textInput.invokeMethod('TextInput.show');
+                  } catch (_) {}
                 },
                 child: const Icon(Icons.keyboard_alt_rounded),
               ),
