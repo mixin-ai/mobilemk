@@ -298,6 +298,24 @@ class _TouchPadPageState extends State<TouchPadPage> with WidgetsBindingObserver
     });
   }
 
+  // 新增：切换输入法显示/隐藏
+  Future<void> _toggleKeyboard() async {
+    final focused = _imeFocus.hasFocus;
+    if (!focused) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      await Future.delayed(const Duration(milliseconds: 10));
+      FocusScope.of(context).requestFocus(_imeFocus);
+      try {
+        await SystemChannels.textInput.invokeMethod('TextInput.show');
+      } catch (_) {}
+    } else {
+      try {
+        await SystemChannels.textInput.invokeMethod('TextInput.hide');
+      } catch (_) {}
+      FocusManager.instance.primaryFocus?.unfocus();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final connected = state == ConnState.connected;
@@ -394,15 +412,7 @@ class _TouchPadPageState extends State<TouchPadPage> with WidgetsBindingObserver
               top: 16,
               child: FilledButton(
                 onPressed: () async {
-                  // 先取消当前焦点，避免被其他节点占用
-                  FocusManager.instance.primaryFocus?.unfocus();
-                  await Future.delayed(const Duration(milliseconds: 10));
-                  // 只请求隐藏输入框的焦点
-                  FocusScope.of(context).requestFocus(_imeFocus);
-                  // 显式请求显示软键盘（部分设备在恢复后需要）
-                  try {
-                    await SystemChannels.textInput.invokeMethod('TextInput.show');
-                  } catch (_) {}
+                  await _toggleKeyboard();
                 },
                 child: const Icon(Icons.keyboard_alt_rounded),
               ),
