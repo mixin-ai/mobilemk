@@ -251,6 +251,11 @@ class _TouchPadPageState extends State<TouchPadPage> with WidgetsBindingObserver
     } catch (_) {}
   }
 
+  // 新增：滚轮累计与节流
+  double pendingRoll = 0.0;
+  Timer? rollFlushTimer;
+  final double _rollGain = 1.0;
+
   void _enqueueMove(Offset delta) {
     // 应用增益系数后再累计，方便统一节流发送
     pendingMove += Offset(delta.dx * _moveGain, delta.dy * _moveGain);
@@ -271,6 +276,23 @@ class _TouchPadPageState extends State<TouchPadPage> with WidgetsBindingObserver
           'ts': DateTime.now().millisecondsSinceEpoch,
           'dx': send.dx,
           'dy': send.dy,
+        });
+      }
+    });
+  }
+
+  // 新增：滚轮事件累计与节流发送（两指垂直滑动）
+  void _enqueueRoll(double dy) {
+    pendingRoll += dy * _rollGain;
+    rollFlushTimer ??= Timer(const Duration(milliseconds: 40), () {
+      final send = pendingRoll;
+      pendingRoll = 0.0;
+      rollFlushTimer = null;
+      if (send.abs() > 0.01) {
+        _sendJson({
+          'type': 'roll',
+          'ts': DateTime.now().millisecondsSinceEpoch,
+          'dy': send,
         });
       }
     });
@@ -330,35 +352,8 @@ class _TouchPadPageState extends State<TouchPadPage> with WidgetsBindingObserver
                     // 改为节流：累计当前位移，100ms 定时发送合并位移
                     _enqueueMove(details.focalPointDelta);
                   } else {
-                    final fp = details.localFocalPoint;
-                    // Pinch
-                    final scale = details.scale;
-                    final ds = scale - _lastScale;
-                    _lastScale = scale;
-                    if (ds.abs() > 0.001) {
-                      _sendJson({
-                        'type': 'pinch',
-                        'ts': DateTime.now().millisecondsSinceEpoch,
-                        'scale': scale,
-                        'dscale': ds,
-                        'cx': fp.dx,
-                        'cy': fp.dy,
-                      });
-                    }
-                    // Rotate
-                    final rot = details.rotation; // radians
-                    final dr = rot - _lastRotation;
-                    _lastRotation = rot;
-                    if (dr.abs() > 0.0001) {
-                      _sendJson({
-                        'type': 'rotate',
-                        'ts': DateTime.now().millisecondsSinceEpoch,
-                        'radians': rot,
-                        'dr': dr,
-                        'cx': fp.dx,
-                        'cy': fp.dy,
-                      });
-                    }
+                    // 两指上下滑动触发滚轮
+                    _enqueueRoll(details.focalPointDelta.dy);
                   }
                 },
                 onScaleEnd: (details) {
